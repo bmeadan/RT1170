@@ -3,8 +3,10 @@
 #include <math.h>
 #include "FlipController.h"
 #include "motors/motors.h"
+#include "motors/RSBL8512.h"
 #include "motors/TvaiDriveMotor.h"
 #include "motors/AlonDriveMotor.h"
+#include "imu/imu.h"
 
 // ------- SIMULATION TEST ------------ -------
 #define FLIP_SIM_AUTOTEST 1
@@ -13,8 +15,13 @@ static void start_flip_autotest();
 
 static FlipController* gFlip = nullptr;
 
+// Local task handle since the header no longer exposes one
+static TaskHandle_t sFlipTaskHandle = nullptr;
+// Local yaw sign used during side flips
+static int8_t sYawSign = 0;
+
 void flip_bind(RSBL8512& yaw, RSBL8512& pitch) {
-    static FlipController controller(yaw, pitch); 
+    static FlipController controller(yaw, pitch);
     gFlip = &controller;
     gFlip->setEnabled();
 }
@@ -24,6 +31,7 @@ void flip_command() {
         gFlip->triggerRecovery();
     }
 }
+
 static inline float normalize_deg(float a) {
     while (a <= -180.0f) a += 360.0f;
     while (a >   180.0f) a -= 360.0f;
@@ -97,8 +105,9 @@ FlipController::classifyOrientation(float pitchDeg, float rollDeg) {
     const float ap = fabsf(pitchDeg);
     const float ar = fabsf(rollDeg);
 
-    if (ap < LEVEL_EPS && ar < LEVEL_EPS) return ORIENT_LEVEL;
-    if (ap > BACK_PITCH_TH)               return ORIENT_BACK;
+    // Map to new enum names from the header
+    if (ap < LEVEL_EPS && ar < LEVEL_EPS) return ORIENT_UPRIGHT;
+    if (ap > BACK_PITCH_TH)               return ORIENT_UPSIDE_DOWN;
     if (rollDeg <= -SIDE_ROLL_TH)         return ORIENT_LEFT;
     if (rollDeg >=  SIDE_ROLL_TH)         return ORIENT_RIGHT;
     return (rollDeg < 0) ? ORIENT_LEFT : ORIENT_RIGHT;
@@ -114,29 +123,40 @@ void FlipController::checkPosition(void) {
 void FlipController::loop(void) {
     checkPosition();
 
+    // Pickup ISR/user trigger
     if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
         recoverRequested = true;
     }
 
     if (recoverRequested && phase == PH_IDLE) {
         Orientation o = classifyOrientation(curPitch, curRoll);
-        if (o == ORIENT_LEVEL) {
-            recoverRequested = false;
+        recoverRequested = false;
+
+        if (o == ORIENT_UPRIGHT) {
             send_yaw_pitch_cmd(0, 0);
             return;
         }
 
-        if (o == ORIENT_LEFT)       yawSign = -1;
-        else if (o == ORIENT_RIGHT) yawSign = +1;
-        else /* ORIENT_BACK */      yawSign = (curRoll < 0 ? -1 : +1);
+        // Plan the maneuver
+        if (o == ORIENT_LEFT) {
+            sYawSign = -1;
+            tgtYaw   = normalize_deg(curYaw + sYawSign * YAW_PREP_DEG);
+            tgtPitch = curPitch; // scorpion planned after yaw align
+            phase    = PH_ALIGN_YAW;
+        } else if (o == ORIENT_RIGHT) {
+            sYawSign = +1;
+            tgtYaw   = normalize_deg(curYaw + sYawSign * YAW_PREP_DEG);
+            tgtPitch = curPitch;
+            phase    = PH_ALIGN_YAW;
+        } else { // ORIENT_UPSIDE_DOWN
+            // No yaw align, immediate scorpion
+            sYawSign = 0;
+            tgtYaw   = curYaw; // hold current yaw
+            tgtPitch = normalize_deg(curPitch + ((curPitch > 0) ? -SCORPION_DEG : SCORPION_DEG));
+            phase    = PH_FLIP_PITCH;
+        }
 
-        startYaw = curYaw;
-        tgtYaw   = normalize_deg(startYaw + yawSign * YAW_PREP_DEG);
-        tgtPitch = curPitch;
-
-        phase = PH_ALIGN_YAW;
         flipInProgress = true;
-        recoverRequested = false;
     }
 
     if (!flipInProgress) {
@@ -180,35 +200,30 @@ void FlipController::loop(void) {
 
         bool pitchReached = fabsf(shortest_delta_deg(curPitch, tgtPitch)) <= PITCH_EPS_DEG;
         if (pitchReached) {
-            tgtPitch = 0.0f;    
-            phase = PH_ALIGN_FINAL;
+            tgtPitch = 0.0f;    // settle to level
+            phase = PH_RECOVER;
         }
         break;
     }
 
-    case PH_ALIGN_FINAL: {
-        float pitchErr = shortest_delta_deg(curPitch, tgtPitch);
+    case PH_RECOVER: {
+        float pitchErr = shortest_delta_deg(curPitch, tgtPitch); // target 0
         int8_t pitchCmd = p_cmd(pitchErr, KP_PITCH, MAX_PWM_PITCH, PITCH_EPS_DEG);
 
-        float yawErr = shortest_delta_deg(curYaw, startYaw);
+        float yawErr = shortest_delta_deg(curYaw, tgtYaw);       // hold planned yaw
         int8_t yawCmd = p_cmd(yawErr, KP_YAW, MAX_PWM_YAW, YAW_EPS_DEG);
 
         send_yaw_pitch_cmd(yawCmd, pitchCmd);
 
-        bool yawAligned   = fabsf(yawErr)   <= YAW_EPS_DEG;
-        bool pitchAligned = fabsf(pitchErr) <= PITCH_EPS_DEG;
-
-        if (yawAligned && pitchAligned) {
-            phase = PH_DONE;
+        const bool leveled = fabsf(shortest_delta_deg(curPitch, 0.0f)) <= PITCH_EPS_DEG;
+        if (leveled) {
+            send_yaw_pitch_cmd(0, 0);
+            flipInProgress = false;
+            sYawSign = 0;
+            phase = PH_IDLE;
         }
         break;
     }
-
-    case PH_DONE:
-        send_yaw_pitch_cmd(0, 0);
-        phase = PH_IDLE;
-        flipInProgress = false;
-        break;
     }
 }
 
@@ -218,7 +233,7 @@ void FlipController::setEnabled(void) {
         phase = PH_IDLE;
         flipInProgress = false;
         recoverRequested = false;
-        yawSign = 0;
+        sYawSign = 0;
 
         xTaskCreate(
             task_flip_controller,
@@ -226,7 +241,7 @@ void FlipController::setEnabled(void) {
             1024U,
             this,
             configMAX_PRIORITIES - 2,
-            &taskHandle
+            &sFlipTaskHandle
         );
     }
 }
@@ -237,8 +252,8 @@ void FlipController::setDisabled(void) {
 }
 
 void FlipController::triggerRecovery() {
-    if (taskHandle) {
-        xTaskNotifyGive(taskHandle);
+    if (sFlipTaskHandle) {
+        xTaskNotifyGive(sFlipTaskHandle);
     } else {
         recoverRequested = true;
     }
@@ -246,8 +261,10 @@ void FlipController::triggerRecovery() {
 
 void FlipController::triggerRecoveryFromISR() {
     BaseType_t woken = pdFALSE;
-    if (taskHandle) {
-        vTaskNotifyGiveFromISR(taskHandle, &woken);
+    if (sFlipTaskHandle) {
+        vTaskNotifyGiveFromISR(sFlipTaskHandle, &woken);
         portYIELD_FROM_ISR(woken);
+    } else {
+        recoverRequested = true;
     }
 }

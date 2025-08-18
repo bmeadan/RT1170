@@ -1,5 +1,0 @@
-ExitOnError 1
-r
-exec EnableEraseAllFlashBanks
-erase
-qc
