@@ -107,6 +107,12 @@ inline void motors_init() {}
 inline void set_motors(const motors_action_t* a) {
   g_last_yaw_cmd   = a->yaw;
   g_last_pitch_cmd = a->pitch;
+
+  // Print only on change to avoid spam
+  static int8_t py=127, pp=127, pd=127, pm=127;
+  if (a->yaw==py && a->pitch==pp && a->drive==pd && a->flip_mode==pm) return;
+  py=a->yaw; pp=a->pitch; pd=a->drive; pm=a->flip_mode;
+
   std::printf("[SIM] set_motors: yaw=%d pitch=%d drive=%d mode=%d\n",
               (int)a->yaw, (int)a->pitch, (int)a->drive, (int)a->flip_mode);
 }
