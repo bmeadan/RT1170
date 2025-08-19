@@ -7,10 +7,11 @@ extern "C" {
 #include "FreeRTOS.h"
 #include "task.h"
 }
+
 #ifdef HOST_SIM
   #include "motors/RSBL8512.h"    
 #else
-  #include "../motors/RSBL8512.h"  // real header on device
+  #include "../motors/RSBL8512.h"
 #endif
 
 class FlipController {
@@ -20,12 +21,10 @@ public:
 
   void setEnabled(void);
   void setDisabled(void);
-  void loop(void);               // call at ~100 Hz (dt = 0.01s)
-  void checkPosition(void);      // updates curYaw/curPitch/curRoll from IMU
-
-  void triggerRecovery();        // call on L2 press
-  void triggerRecoveryFromISR(); // ISR-safe variant
-
+  void loop(void);
+  void checkPosition(void);
+  void triggerRecovery();
+  void triggerRecoveryFromISR();
   volatile bool active = false;
 
   enum Orientation : uint8_t {
@@ -35,14 +34,17 @@ public:
     ORIENT_UPSIDE_DOWN
   };
 
-
 private:
   // --------- Types ---------
   enum Phase : uint8_t {
     PH_IDLE = 0,
     PH_ALIGN_YAW,
     PH_FLIP_PITCH,
-    PH_RECOVER
+    PH_RECOVER,
+    PH_PITCH_DOWN,
+    PH_YAW_TURN1,
+    PH_PITCH_UP,
+    PH_YAW_TURN2
   };
 
   static Orientation classifyOrientation(float pitchDeg);
@@ -51,27 +53,21 @@ private:
   RSBL8512& yaw;
   RSBL8512& pitch;
 
-  Phase  phase     = PH_IDLE;
+  Phase phase = PH_IDLE;
 
-  float  curYaw    = 0.0f;   // degrees [-180,180]
-  float  curPitch  = 0.0f;   // degrees [-180,180]
+  float curYaw   = 0.0f;
+  float curPitch = 0.0f;
+  float tgtYaw   = 0.0f;
+  float tgtPitch = 0.0f;
 
-  float  tgtYaw    = 0.0f;
-  float  tgtPitch  = 0.0f;
-
-  // rates (deg/s)
   const float yawRateDegPerSec   = 90.0f;
   const float pitchRateDegPerSec = 120.0f;
+  const float yawEps             = 1.0f;
+  const float pitchEps           = 1.0f;
+  const float dt                 = 0.010f;
 
-  // epsilons for “close enough”
-  const float yawEps   = 1.0f;
-  const float pitchEps = 1.0f;
-
-  // loop period (s)
-  const float dt = 0.010f;
-
-  bool   flipInProgress   = false;
-  bool   recoverRequested = false;
+  bool flipInProgress   = false;
+  bool recoverRequested = false;
 
   // --------- Helpers ---------
   static inline float normalizeDeg(float d) {
@@ -100,11 +96,9 @@ private:
 
   void sendCmd(int8_t yawPwm, int8_t pitchPwm);
 
-  // Gains and limits (tune as needed)
-  static constexpr float KP_YAW        = 1.0f;
-  static constexpr float KP_PITCH      = 1.0f;
+  static constexpr float KP_YAW         = 1.0f;
+  static constexpr float KP_PITCH       = 1.0f;
   static constexpr int8_t MAX_PWM_YAW  = 100;
   static constexpr int8_t MAX_PWM_PITCH= 100;
-
-  static constexpr float SCORPION_DEG  = 45.0f; // pitch impulse toward level
+  static constexpr float SCORPION_DEG   = 45.0f;
 };
