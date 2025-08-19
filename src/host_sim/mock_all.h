@@ -43,7 +43,7 @@ inline BaseType_t xTaskCreate(void (*fn)(void*), const char*, uint16_t,
 }
 inline uint32_t ulTaskNotifyTake(BaseType_t, TickType_t) {
   static int first = 1;
-  if (first) { first = 0; return 1; }  // trigger once
+  if (first) { first = 0; return 1; }
   return 0;
 }
 inline void     xTaskNotifyGive(TaskHandle_t) {}
@@ -60,35 +60,24 @@ inline void lights_set(int, int) {}
 inline void lights_blink(int, int) {}
 
 /* ======================== IMU ========================= */
-/* Sim state (degrees, but controller expects hundredths from IMU) */
-static float sim_yaw_deg   = 0.0f;
-static float sim_pitch_deg = 0.0f;
-static float sim_roll_deg  = 60.0f;  // start on right side so recovery triggers
+struct imu_data_t {
+  int16_t yaw;
+  int16_t pitch;
+  // roll removed
+};
 
-/* Latest commands from set_motors */
-static int8_t g_last_yaw_cmd   = 0;
-static int8_t g_last_pitch_cmd = 0;
+struct SimIMU {
+  float pitch_deg = 0.0f;
+  float yaw_deg   = 0.0f;
+};
 
-/* Convert to device format (hundredths of degrees) */
-struct imu_data_t { int16_t yaw; int16_t pitch; int16_t roll; };
+extern SimIMU g_imu;
 
-/* Simple physics: integrate commands into angles */
 inline imu_data_t get_imu_data() {
-  // scale: ~0.2° per tick per PWM unit (tweak as you like)
-  sim_yaw_deg   += (float)g_last_yaw_cmd   * 0.2f;
-  sim_pitch_deg += (float)g_last_pitch_cmd * 0.2f;
-
-  // normalize to [-180, 180]
-  auto norm = [](float a){ while(a<=-180) a+=360; while(a>180) a-=360; return a; };
-  sim_yaw_deg   = norm(sim_yaw_deg);
-  sim_pitch_deg = norm(sim_pitch_deg);
-
-  // roll stays at +60° during the flip planning; the controller doesn’t need it afterwards
-  return imu_data_t{
-    (int16_t)std::lround(sim_yaw_deg   * 100.0f),
-    (int16_t)std::lround(sim_pitch_deg * 100.0f),
-    (int16_t)std::lround(sim_roll_deg  * 100.0f)
-  };
+  imu_data_t out;
+  out.yaw   = static_cast<int16_t>(std::lround(g_imu.yaw_deg * 100.0f));
+  out.pitch = static_cast<int16_t>(std::lround(g_imu.pitch_deg * 100.0f));
+  return out;
 }
 
 /* ==================== Motors / Actions ================ */
@@ -105,10 +94,6 @@ struct motors_action_t {
 inline void motors_init() {}
 
 inline void set_motors(const motors_action_t* a) {
-  g_last_yaw_cmd   = a->yaw;
-  g_last_pitch_cmd = a->pitch;
-
-  // Print only on change to avoid spam
   static int8_t py=127, pp=127, pd=127, pm=127;
   if (a->yaw==py && a->pitch==pp && a->drive==pd && a->flip_mode==pm) return;
   py=a->yaw; pp=a->pitch; pd=a->drive; pm=a->flip_mode;
@@ -118,9 +103,7 @@ inline void set_motors(const motors_action_t* a) {
 }
 
 
-
 /* ===================== RSBL8512 stub ================== */
-/* Needed because FlipController has RSBL8512& members and ctor args */
 struct RSBL8512 {
   explicit RSBL8512(uint8_t) {}
   void setTarget(int) {}

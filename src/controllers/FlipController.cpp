@@ -13,6 +13,8 @@
 
 static void start_flip_autotest();
 
+static void integrate_pose_from_pwm();
+
 static FlipController* gFlip = nullptr;
 
 // Local task handle since the header no longer exposes one
@@ -38,7 +40,10 @@ static inline float normalize_deg(float a) {
     return a;
 }
 static inline float shortest_delta_deg(float from, float to) {
-    return normalize_deg(to - from);
+    float diff = to - from;
+    while (diff < -180.0f) diff += 360.0f;
+    while (diff > 180.0f) diff -= 360.0f;
+    return diff;
 }
 static inline float step_towards(float current, float target, float max_step) {
     float d = shortest_delta_deg(current, target);
@@ -57,6 +62,7 @@ static inline int8_t p_cmd(float err_deg, float kp, int8_t max_pwm, float deadba
     float u = kp * err_deg;
     return clamp_i8((int)lroundf(u), -max_pwm, max_pwm);
 }
+static motors_action_t last_motor_cmd{};
 
 static void send_yaw_pitch_cmd(int8_t yaw_pwm, int8_t pitch_pwm) {
     motors_action_t act{};
@@ -66,12 +72,14 @@ static void send_yaw_pitch_cmd(int8_t yaw_pwm, int8_t pitch_pwm) {
     act.auto_neutral_joints = 0;
     act.drive_pulse = 0;
     act.flip_mode = 0;
+
+    last_motor_cmd = act; // <-- store for simulation
     set_motors(&act);
 }
 
+
 // ----------------- Recovery params  -----------------
 static constexpr float LEVEL_EPS       = 12.0f;
-static constexpr float SIDE_ROLL_TH    = 45.0f;
 static constexpr float BACK_PITCH_TH   = 100.0f;
 
 static constexpr float YAW_PREP_DEG    = 35.0f;
@@ -85,8 +93,8 @@ static constexpr float KP_PITCH        = 1.6f;
 static constexpr int8_t MAX_PWM_YAW    = 60;
 static constexpr int8_t MAX_PWM_PITCH  = 60;
 
-static constexpr float YAW_EPS_DEG     = 3.0f;
-static constexpr float PITCH_EPS_DEG   = 3.0f;
+static constexpr float YAW_EPS_DEG     = 0.1f;
+static constexpr float PITCH_EPS_DEG   = 0.1f;
 
 static constexpr float DT_SEC          = 0.010f;
 
@@ -101,26 +109,23 @@ static void task_flip_controller(void *pvParameters) {
 }
 
 FlipController::Orientation
-FlipController::classifyOrientation(float pitchDeg, float rollDeg) {
+FlipController::classifyOrientation(float pitchDeg) {
     const float ap = fabsf(pitchDeg);
-    const float ar = fabsf(rollDeg);
 
-    // Map to new enum names from the header
-    if (ap < LEVEL_EPS && ar < LEVEL_EPS) return ORIENT_UPRIGHT;
-    if (ap > BACK_PITCH_TH)               return ORIENT_UPSIDE_DOWN;
-    if (rollDeg <= -SIDE_ROLL_TH)         return ORIENT_LEFT;
-    if (rollDeg >=  SIDE_ROLL_TH)         return ORIENT_RIGHT;
-    return (rollDeg < 0) ? ORIENT_LEFT : ORIENT_RIGHT;
+    if (ap < LEVEL_EPS)        return ORIENT_UPRIGHT;
+    if (ap > BACK_PITCH_TH)    return ORIENT_UPSIDE_DOWN;
+    if (pitchDeg < 0)          return ORIENT_LEFT;
+    return ORIENT_RIGHT;
 }
 
 void FlipController::checkPosition(void) {
     imu_data_t imu = get_imu_data();
     curYaw   = normalize_deg((float)imu.yaw   / 100.0f);
     curPitch = normalize_deg((float)imu.pitch / 100.0f);
-    curRoll  = normalize_deg((float)imu.roll  / 100.0f);
 }
 
 void FlipController::loop(void) {
+    integrate_pose_from_pwm();
     checkPosition();
 
     // Pickup ISR/user trigger
@@ -129,7 +134,7 @@ void FlipController::loop(void) {
     }
 
     if (recoverRequested && phase == PH_IDLE) {
-        Orientation o = classifyOrientation(curPitch, curRoll);
+        Orientation o = classifyOrientation(curPitch);
         recoverRequested = false;
 
         if (o == ORIENT_UPRIGHT) {
@@ -267,4 +272,18 @@ void FlipController::triggerRecoveryFromISR() {
     } else {
         recoverRequested = true;
     }
+}
+
+static motors_action_t get_last_motor_cmd() {
+    return last_motor_cmd;
+}
+
+static void integrate_pose_from_pwm() {
+    motors_action_t act = get_last_motor_cmd();
+
+    float pitch_change = (float)act.pitch * DT_SEC * PITCH_RATE_DPS;
+    float yaw_change   = (float)act.yaw   * DT_SEC * YAW_RATE_DPS;
+
+    g_imu.pitch_deg = normalize_deg(g_imu.pitch_deg + pitch_change);
+    g_imu.yaw_deg   = normalize_deg(g_imu.yaw_deg + yaw_change);
 }

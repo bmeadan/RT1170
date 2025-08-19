@@ -28,8 +28,6 @@ public:
 
   volatile bool active = false;
 
-private:
-  // --------- Types ---------
   enum Orientation : uint8_t {
     ORIENT_UPRIGHT = 0,
     ORIENT_LEFT,
@@ -37,6 +35,9 @@ private:
     ORIENT_UPSIDE_DOWN
   };
 
+
+private:
+  // --------- Types ---------
   enum Phase : uint8_t {
     PH_IDLE = 0,
     PH_ALIGN_YAW,
@@ -44,7 +45,7 @@ private:
     PH_RECOVER
   };
 
-  static Orientation classifyOrientation(float pitchDeg, float rollDeg);
+  static Orientation classifyOrientation(float pitchDeg);
 
   // --------- Members ---------
   RSBL8512& yaw;
@@ -54,7 +55,6 @@ private:
 
   float  curYaw    = 0.0f;   // degrees [-180,180]
   float  curPitch  = 0.0f;   // degrees [-180,180]
-  float  curRoll   = 0.0f;   // degrees [-180,180]
 
   float  tgtYaw    = 0.0f;
   float  tgtPitch  = 0.0f;
