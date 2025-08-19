@@ -91,11 +91,11 @@ static constexpr float PITCH_RATE_DPS  = 120.0f;
 
 static constexpr float KP_YAW          = 1.6f;
 static constexpr float KP_PITCH        = 1.6f;
-static constexpr int8_t MAX_PWM_YAW    = 60;
+static constexpr int8_t MAX_PWM_YAW    = 100;
 static constexpr int8_t MAX_PWM_PITCH  = 60;
 
-static constexpr float YAW_EPS_DEG     = 0.1f;
-static constexpr float PITCH_EPS_DEG   = 0.1f;
+static constexpr float YAW_EPS_DEG     = 1.0f;
+static constexpr float PITCH_EPS_DEG   = 1.0f;
 
 static constexpr float DT_SEC          = 0.010f;
 
@@ -114,12 +114,10 @@ static void task_flip_controller(void *pvParameters) {
 
 FlipController::Orientation
 FlipController::classifyOrientation(float pitchDeg) {
-    const float ap = fabsf(pitchDeg);
-
-    if (ap < LEVEL_EPS)        return ORIENT_UPRIGHT;
-    if (ap > BACK_PITCH_TH)    return ORIENT_UPSIDE_DOWN;
-    if (pitchDeg < 0)          return ORIENT_LEFT;
-    return ORIENT_RIGHT;
+    if (pitchDeg > 90.0f) return ORIENT_UPSIDE_DOWN;
+    if (pitchDeg < -45.0f) return ORIENT_LEFT;
+    if (pitchDeg > 45.0f) return ORIENT_RIGHT;
+    return ORIENT_UPRIGHT;
 }
 
 void FlipController::checkPosition(void) {
@@ -132,29 +130,40 @@ void FlipController::loop(void) {
     integrate_pose_from_pwm();
     checkPosition();
 
-    // Pickup ISR/user trigger
     if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
         recoverRequested = true;
     }
-
     if (recoverRequested && phase == PH_IDLE) {
-        Orientation o = classifyOrientation(curPitch);
-        recoverRequested = false;
+    Orientation o = classifyOrientation(curPitch);
+    std::printf("[SIM] Detected orientation: %d (pitch=%.1f)\n", (int)o, curPitch);
 
-        if (o == ORIENT_UPRIGHT) {
-            send_yaw_pitch_cmd(0, 0);
-            return;
-        }
+    recoverRequested = false;
 
-        // Full 4-phase plan for all orientations
-        sYawSign = (o == ORIENT_LEFT) ? -1 : (o == ORIENT_RIGHT) ? 1 : 1;
-        if (o == ORIENT_UPSIDE_DOWN) {
-            tgtPitch = -90.0f;
-        } else {
-            tgtPitch = normalize_deg(curPitch + ((o == ORIENT_LEFT) ? SCORPION_DEG : -SCORPION_DEG));
-        }tgtYaw = curYaw;
+    if (o == ORIENT_UPRIGHT) {
+        send_yaw_pitch_cmd(0, 0);
+        return;
+    }
+
+    flipInProgress = true;
+
+    if (o == ORIENT_UPSIDE_DOWN) {
+        // 1. Pitch down
+        sYawSign = 1;
+        tgtPitch = -90.0f;
         phase = PH_PITCH_DOWN;
-        flipInProgress = true;
+    }
+    else if (o == ORIENT_LEFT) {
+        // Yaw first, then pitch down
+        sYawSign = 1;
+        tgtYaw = normalize_deg(curYaw + 90.0f);
+        phase = PH_YAW_TURN1;
+    }
+    else if (o == ORIENT_RIGHT) {
+        // 1. Yaw -90°
+        sYawSign = -1;
+        tgtYaw = normalize_deg(curYaw - 90.0f);
+        phase = PH_YAW_TURN1;
+    }
     }
 
     if (!flipInProgress) {
@@ -168,7 +177,43 @@ void FlipController::loop(void) {
     switch (phase) {
     case PH_IDLE:
         send_yaw_pitch_cmd(0, 0);
+        std::printf("[SIM] Idle: curPitch=%.1f curYaw=%.1f (no recovery in progress)\n", curPitch, curYaw);
+
         break;
+
+    case PH_YAW_TURN1: {
+        float nextYaw = step_towards(curYaw, tgtYaw, yawStepMax);
+        float yawErr = shortest_delta_deg(curYaw, tgtYaw);
+        int8_t yawCmd = p_cmd(yawErr, KP_YAW, MAX_PWM_YAW, YAW_EPS_DEG);
+        std::printf("[SIM] YAW_TURN1: cur=%.1f tgt=%.1f err=%.1f cmd=%d\n", curYaw, tgtYaw, yawErr, yawCmd);
+
+        send_yaw_pitch_cmd(yawCmd, 0);
+
+        if (fabsf(yawErr) <= YAW_EPS_DEG) {
+            std::printf("[SIM] YAW_TURN1 complete, switching to PITCH_UP\n");
+            send_yaw_pitch_cmd(0, 0);
+            tgtPitch = 0.0f;
+            phase = PH_PITCH_UP;
+        }
+        break;
+    }
+
+
+
+    case PH_PITCH_UP: {
+        float nextPitch = step_towards(curPitch, tgtPitch, pitchStepMax);
+        float pitchErr = shortest_delta_deg(curPitch, tgtPitch);
+        int8_t pitchCmd = p_cmd(pitchErr, KP_PITCH, MAX_PWM_PITCH, PITCH_EPS_DEG);
+        std::printf("[SIM] PITCH_UP: cur=%.1f tgt=%.1f err=%.1f cmd=%d\n", curPitch, tgtPitch, pitchErr, pitchCmd);
+        send_yaw_pitch_cmd(0, pitchCmd);
+
+        if (fabsf(pitchErr) <= PITCH_EPS_DEG) {
+            send_yaw_pitch_cmd(0, 0);
+            tgtPitch = -90.0f;
+            phase = PH_PITCH_DOWN;
+        }
+        break;
+    }
 
     case PH_PITCH_DOWN: {
         float nextPitch = step_towards(curPitch, tgtPitch, pitchStepMax);
@@ -178,54 +223,46 @@ void FlipController::loop(void) {
 
         if (fabsf(shortest_delta_deg(curPitch, tgtPitch)) <= PITCH_EPS_DEG) {
             tgtYaw = normalize_deg(curYaw + sYawSign * 90.0f);
-            phase = PH_YAW_TURN1;
-        }
-        break;
-    }
+            std::printf("[SIM] Planning yaw: curYaw=%.1f → tgtYaw=%.1f\n", curYaw, tgtYaw);
 
-    case PH_YAW_TURN1: {
-        float nextYaw = step_towards(curYaw, tgtYaw, yawStepMax);
-        float yawErr = shortest_delta_deg(curYaw, nextYaw);
-        int8_t yawCmd = p_cmd(yawErr, KP_YAW, MAX_PWM_YAW, YAW_EPS_DEG);
-        send_yaw_pitch_cmd(yawCmd, 0);
-
-        if (fabsf(shortest_delta_deg(curYaw, tgtYaw)) <= YAW_EPS_DEG) {
-            tgtPitch = 0.0f;
-            phase = PH_PITCH_UP;
-        }
-        break;
-    }
-
-    case PH_PITCH_UP: {
-        float nextPitch = step_towards(curPitch, tgtPitch, pitchStepMax);
-        float pitchErr = shortest_delta_deg(curPitch, nextPitch);
-        int8_t pitchCmd = p_cmd(pitchErr, KP_PITCH, MAX_PWM_PITCH, PITCH_EPS_DEG);
-        send_yaw_pitch_cmd(0, pitchCmd);
-
-        if (fabsf(shortest_delta_deg(curPitch, tgtPitch)) <= PITCH_EPS_DEG) {
-            tgtYaw = normalize_deg(curYaw + sYawSign * 90.0f);
             phase = PH_YAW_TURN2;
         }
         break;
     }
 
-    case PH_YAW_TURN2: {
-        float nextYaw = step_towards(curYaw, tgtYaw, yawStepMax);
-        float yawErr = shortest_delta_deg(curYaw, nextYaw);
-        int8_t yawCmd = p_cmd(yawErr, KP_YAW, MAX_PWM_YAW, YAW_EPS_DEG);
-        send_yaw_pitch_cmd(yawCmd, 0);
+case PH_YAW_TURN2:
+  {
+    imu_data_t imu = get_imu_data();
+    //float curYaw = normalize_deg((float)imu.yaw / 100.0f);
+    float yawErr = shortest_delta_deg(curYaw, tgtYaw);
+    int yawCmd = p_cmd(yawErr, KP_YAW, MAX_PWM_YAW, YAW_EPS_DEG);
 
-        if (fabsf(shortest_delta_deg(curYaw, tgtYaw)) <= YAW_EPS_DEG) {
-            send_yaw_pitch_cmd(0, 0);
-            flipInProgress = false;
-            sYawSign = 0;
-            phase = PH_IDLE;
-        }
-        break;
+    std::printf("[SIM] YAW_TURN2: cur=%.1f tgt=%.1f err=%.1f cmd=%d\n",
+                curYaw, tgtYaw, yawErr, yawCmd);
+
+    motors_action_t act = {};
+    act.yaw = yawCmd;
+    act.flip_mode = 0;
+    set_motors(&act);
+
+    #ifdef HOST_SIM
+    g_imu.yaw_deg = normalize_deg(g_imu.yaw_deg + (float)yawCmd * DT_SEC);
+    #endif
+
+    if (fabsf(yawErr) <= YAW_EPS_DEG || yawCmd == 0) {
+        motors_action_t stop = {};
+        set_motors(&stop);
+        std::printf("[SIM] YAW_TURN2 complete, switching to IDLE\n");
+        flipInProgress = false;
+        phase = PH_IDLE;        // ✅ fixed!
     }
+
+    break;
+  }
+
+
     }
 }
-
 
 void FlipController::setEnabled(void) {
     if (!active) {
@@ -269,7 +306,6 @@ void FlipController::triggerRecoveryFromISR() {
     }
 }
 
-// ---------------- SIMULATION ONLY ----------------
 #if FLIP_SIM_AUTOTEST
 static motors_action_t get_last_motor_cmd() {
     return last_motor_cmd;
@@ -278,7 +314,7 @@ static motors_action_t get_last_motor_cmd() {
 static void integrate_pose_from_pwm() {
     motors_action_t act = get_last_motor_cmd();
 
-    float pitch_change = (float)act.pitch * DT_SEC * PITCH_RATE_DPS * 3.0f;
+    float pitch_change = (float)act.pitch * DT_SEC * PITCH_RATE_DPS;
     float yaw_change   = (float)act.yaw   * DT_SEC * YAW_RATE_DPS;
 
     g_imu.pitch_deg = normalize_deg(g_imu.pitch_deg + pitch_change);

@@ -33,10 +33,22 @@ static void print_pose() {
 
 static void set_initial_pose_from_choice(int choice) {
   switch (choice) {
-    case 1: g_imu.pitch_deg = 0.0f; g_imu.yaw_deg = 0.0f; break; // Left
-    case 2: g_imu.pitch_deg=0.0f; g_imu.yaw_deg=0.0f;break; // Right
-    case 3: g_imu.pitch_deg=180.0f; g_imu.yaw_deg=0.0f; break; // Upside-down
-    default:g_imu.pitch_deg=180.0f; g_imu.yaw_deg=0.0f; break;
+    case 1: // Left side
+      g_imu.pitch_deg = -90.0f;
+      g_imu.yaw_deg   = 0.0f;
+      break;
+    case 2: // Right side
+      g_imu.pitch_deg = 90.0f;
+      g_imu.yaw_deg   = 0.0f;
+      break;
+    case 3: // Upside down
+      g_imu.pitch_deg = 180.0f;
+      g_imu.yaw_deg   = 0.0f;
+      break;
+    default: // Invalid → treat as upright
+      g_imu.pitch_deg = 0.0f;
+      g_imu.yaw_deg   = 0.0f;
+      break;
   }
 }
 
