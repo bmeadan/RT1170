@@ -2,16 +2,24 @@
 #include "task.h"
 #include <math.h>
 #include "FlipController.h"
+
 #include "motors/motors.h"
+#ifdef HOST_SIM
+#include "mock_all.h"
 #include "motors/RSBL8512.h"
+#endif
 #include "motors/TvaiDriveMotor.h"
 #include "motors/AlonDriveMotor.h"
 #include "imu/imu.h"
+#include <initializer_list>
+#include <cstdio>
 
 // ------- SIMULATION TEST ------------ -------
 #define FLIP_SIM_AUTOTEST 1
 
-static void integrate_pose_from_pwm();
+#ifdef HOST_SIM
+    static void integrate_pose_from_pwm();
+#endif
 
 static FlipController* gFlip = nullptr;
 
@@ -102,8 +110,8 @@ static constexpr float DT_SEC          = 0.010f;
 static void task_flip_controller(void *pvParameters) {
     auto *ctrl = static_cast<FlipController*>(pvParameters);
     while (ctrl->active) {
-#if FLIP_SIM_AUTOTEST
-        integrate_pose_from_pwm();
+#ifdef HOST_SIM
+    integrate_pose_from_pwm();
 #endif
         ctrl->loop();
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -127,7 +135,9 @@ void FlipController::checkPosition(void) {
 }
 
 void FlipController::loop(void) {
-    integrate_pose_from_pwm();
+    #ifdef HOST_SIM
+        integrate_pose_from_pwm();
+    #endif
     checkPosition();
 
     if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
@@ -147,23 +157,22 @@ void FlipController::loop(void) {
     flipInProgress = true;
 
     if (o == ORIENT_UPSIDE_DOWN) {
-        // 1. Pitch down
-        sYawSign = 1;
         tgtPitch = -90.0f;
-        phase = PH_PITCH_DOWN;
+        startSequence({PH_PITCH_DOWN});
     }
     else if (o == ORIENT_LEFT) {
-        // Yaw first, then pitch down
         sYawSign = 1;
         tgtYaw = normalize_deg(curYaw + 90.0f);
-        phase = PH_YAW_TURN1;
+        tgtPitch = 0.0f;
+        startSequence({PH_YAW_TURN1, PH_PITCH_UP, PH_PITCH_DOWN, PH_YAW_TURN2});
     }
     else if (o == ORIENT_RIGHT) {
-        // 1. Yaw -90°
         sYawSign = -1;
         tgtYaw = normalize_deg(curYaw - 90.0f);
-        phase = PH_YAW_TURN1;
+        tgtPitch = 0.0f;
+        startSequence({PH_YAW_TURN1, PH_PITCH_UP, PH_PITCH_DOWN, PH_YAW_TURN2});
     }
+
     }
 
     if (!flipInProgress) {
@@ -174,26 +183,33 @@ void FlipController::loop(void) {
     const float yawStepMax   = YAW_RATE_DPS   * DT_SEC;
     const float pitchStepMax = PITCH_RATE_DPS * DT_SEC;
 
+    if (!flipInProgress || currentStepIndex >= sequenceLength) {
+        send_yaw_pitch_cmd(0, 0);
+        return;
+    }
+
+    phase = phaseSequence[currentStepIndex];
     switch (phase) {
     case PH_IDLE:
         send_yaw_pitch_cmd(0, 0);
+        #ifdef HOST_SIM
         std::printf("[SIM] Idle: curPitch=%.1f curYaw=%.1f (no recovery in progress)\n", curPitch, curYaw);
-
+        #endif
+        currentStepIndex++;
         break;
 
     case PH_YAW_TURN1: {
-        float nextYaw = step_towards(curYaw, tgtYaw, yawStepMax);
         float yawErr = shortest_delta_deg(curYaw, tgtYaw);
         int8_t yawCmd = p_cmd(yawErr, KP_YAW, MAX_PWM_YAW, YAW_EPS_DEG);
+        #ifdef HOST_SIM
         std::printf("[SIM] YAW_TURN1: cur=%.1f tgt=%.1f err=%.1f cmd=%d\n", curYaw, tgtYaw, yawErr, yawCmd);
-
+        #endif
         send_yaw_pitch_cmd(yawCmd, 0);
 
         if (fabsf(yawErr) <= YAW_EPS_DEG) {
-            std::printf("[SIM] YAW_TURN1 complete, switching to PITCH_UP\n");
             send_yaw_pitch_cmd(0, 0);
             tgtPitch = 0.0f;
-            phase = PH_PITCH_UP;
+            currentStepIndex++;  
         }
         break;
     }
@@ -201,16 +217,17 @@ void FlipController::loop(void) {
 
 
     case PH_PITCH_UP: {
-        float nextPitch = step_towards(curPitch, tgtPitch, pitchStepMax);
         float pitchErr = shortest_delta_deg(curPitch, tgtPitch);
         int8_t pitchCmd = p_cmd(pitchErr, KP_PITCH, MAX_PWM_PITCH, PITCH_EPS_DEG);
+        #ifdef HOST_SIM
         std::printf("[SIM] PITCH_UP: cur=%.1f tgt=%.1f err=%.1f cmd=%d\n", curPitch, tgtPitch, pitchErr, pitchCmd);
+        #endif
         send_yaw_pitch_cmd(0, pitchCmd);
 
         if (fabsf(pitchErr) <= PITCH_EPS_DEG) {
             send_yaw_pitch_cmd(0, 0);
             tgtPitch = -90.0f;
-            phase = PH_PITCH_DOWN;
+            currentStepIndex++;  
         }
         break;
     }
@@ -223,10 +240,12 @@ void FlipController::loop(void) {
 
         if (fabsf(shortest_delta_deg(curPitch, tgtPitch)) <= PITCH_EPS_DEG) {
             tgtYaw = normalize_deg(curYaw + sYawSign * 90.0f);
+            #ifdef HOST_SIM
             std::printf("[SIM] Planning yaw: curYaw=%.1f → tgtYaw=%.1f\n", curYaw, tgtYaw);
-
+            #endif
             phase = PH_YAW_TURN2;
         }
+        currentStepIndex++;
         break;
     }
 
@@ -236,10 +255,10 @@ case PH_YAW_TURN2:
     //float curYaw = normalize_deg((float)imu.yaw / 100.0f);
     float yawErr = shortest_delta_deg(curYaw, tgtYaw);
     int yawCmd = p_cmd(yawErr, KP_YAW, MAX_PWM_YAW, YAW_EPS_DEG);
-
-    std::printf("[SIM] YAW_TURN2: cur=%.1f tgt=%.1f err=%.1f cmd=%d\n",
-                curYaw, tgtYaw, yawErr, yawCmd);
-
+    #ifdef HOST_SIM
+        std::printf("[SIM] YAW_TURN2: cur=%.1f tgt=%.1f err=%.1f cmd=%d\n",
+                    curYaw, tgtYaw, yawErr, yawCmd);
+    #endif
     motors_action_t act = {};
     act.yaw = yawCmd;
     act.flip_mode = 0;
@@ -252,11 +271,13 @@ case PH_YAW_TURN2:
     if (fabsf(yawErr) <= YAW_EPS_DEG || yawCmd == 0) {
         motors_action_t stop = {};
         set_motors(&stop);
+        #ifdef HOST_SIM
         std::printf("[SIM] YAW_TURN2 complete, switching to IDLE\n");
+        #endif
         flipInProgress = false;
-        phase = PH_IDLE;        // ✅ fixed!
+        phase = PH_IDLE;  
     }
-
+    currentStepIndex++;
     break;
   }
 
@@ -306,7 +327,7 @@ void FlipController::triggerRecoveryFromISR() {
     }
 }
 
-#if FLIP_SIM_AUTOTEST
+#ifdef HOST_SIM
 static motors_action_t get_last_motor_cmd() {
     return last_motor_cmd;
 }
@@ -321,3 +342,11 @@ static void integrate_pose_from_pwm() {
     g_imu.yaw_deg   = normalize_deg(g_imu.yaw_deg + yaw_change);
 }
 #endif
+
+
+void FlipController::startSequence(std::initializer_list<phase_t> seq) {
+    sequenceLength = seq.size();
+    std::copy(seq.begin(), seq.end(), phaseSequence);
+    currentStepIndex = 0;
+    flipInProgress = true;
+}

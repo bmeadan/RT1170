@@ -4,8 +4,9 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
-
+#ifdef HOST_SIM
 #include "mock_all.h"
+
 SimIMU g_imu;
 
 static inline int32_t deg_to_centideg(float d) {
@@ -130,3 +131,4 @@ int main() {
   std::puts("[SIM] done.");
   return 0;
 }
+#endif

@@ -1,4 +1,7 @@
 #pragma once
+
+#ifdef HOST_SIM
+
 #include <cstdint>
 #include <cstdio>
 #include <thread>
@@ -125,3 +128,5 @@ inline int  flash_write(int, const void*, int) { return 0; }
 inline int  ext_map_addr(const char*) { return 0x10000; }
 inline void network_init() {}
 inline void network_poll() {}
+
+#endif

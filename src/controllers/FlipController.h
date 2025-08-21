@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <math.h>
 #include "imu/imu.h"
+#include <initializer_list>
 
 extern "C" {
 #include "FreeRTOS.h"
@@ -9,7 +10,7 @@ extern "C" {
 }
 
 #ifdef HOST_SIM
-  #include "motors/RSBL8512.h"    
+  #include "motors/RSBL8512.h"
 #else
   #include "../motors/RSBL8512.h"
 #endif
@@ -25,17 +26,7 @@ public:
   void checkPosition(void);
   void triggerRecovery();
   void triggerRecoveryFromISR();
-  volatile bool active = false;
 
-  enum Orientation : uint8_t {
-    ORIENT_UPRIGHT = 0,
-    ORIENT_LEFT,
-    ORIENT_RIGHT,
-    ORIENT_UPSIDE_DOWN
-  };
-
-private:
-  // --------- Types ---------
   enum Phase : uint8_t {
     PH_IDLE = 0,
     PH_ALIGN_YAW,
@@ -47,9 +38,23 @@ private:
     PH_YAW_TURN2
   };
 
-  static Orientation classifyOrientation(float pitchDeg);
+  using phase_t = Phase;
 
-  // --------- Members ---------
+  void startSequence(std::initializer_list<phase_t> seq);
+
+  enum Orientation : uint8_t {
+    ORIENT_UPRIGHT = 0,
+    ORIENT_LEFT,
+    ORIENT_RIGHT,
+    ORIENT_UPSIDE_DOWN
+  };
+
+  phase_t phaseSequence[8] = {};
+  int sequenceLength = 0;
+  int currentStepIndex = 0;
+  volatile bool active = false;
+
+private:
   RSBL8512& yaw;
   RSBL8512& pitch;
 
@@ -68,6 +73,8 @@ private:
 
   bool flipInProgress   = false;
   bool recoverRequested = false;
+
+  static Orientation classifyOrientation(float pitchDeg);
 
   // --------- Helpers ---------
   static inline float normalizeDeg(float d) {
@@ -91,14 +98,14 @@ private:
     float u = kp * err;
     if (u >  maxPwm) u =  maxPwm;
     if (u < -maxPwm) u = -maxPwm;
-    return (int8_t)u; 
+    return (int8_t)u;
   }
 
   void sendCmd(int8_t yawPwm, int8_t pitchPwm);
 
   static constexpr float KP_YAW         = 1.0f;
   static constexpr float KP_PITCH       = 1.0f;
-  static constexpr int8_t MAX_PWM_YAW  = 100;
-  static constexpr int8_t MAX_PWM_PITCH= 100;
+  static constexpr int8_t MAX_PWM_YAW   = 100;
+  static constexpr int8_t MAX_PWM_PITCH = 100;
   static constexpr float SCORPION_DEG   = 45.0f;
 };
