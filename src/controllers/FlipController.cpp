@@ -161,16 +161,16 @@ void FlipController::loop(void) {
         startSequence({PH_PITCH_DOWN});
     }
     else if (o == ORIENT_LEFT) {
-        sYawSign = 1;
-        tgtYaw = normalize_deg(curYaw + 90.0f);
-        tgtPitch = 0.0f;
-        startSequence({PH_YAW_TURN1, PH_PITCH_UP, PH_PITCH_DOWN, PH_YAW_TURN2});
+            sYawSign = 1;
+            tgtPitch = 0.0f; 
+            tgtYaw = normalize_deg(curYaw + 90.0f); 
+            startSequence({PH_PITCH_UP, PH_YAW_TURN1, PH_PITCH_DOWN});
     }
     else if (o == ORIENT_RIGHT) {
         sYawSign = -1;
-        tgtYaw = normalize_deg(curYaw - 90.0f);
         tgtPitch = 0.0f;
-        startSequence({PH_YAW_TURN1, PH_PITCH_UP, PH_PITCH_DOWN, PH_YAW_TURN2});
+        tgtYaw = normalize_deg(curYaw - 90.0f);
+        startSequence({PH_PITCH_UP, PH_YAW_TURN1, PH_PITCH_DOWN});
     }
 
     }
@@ -239,15 +239,18 @@ void FlipController::loop(void) {
         send_yaw_pitch_cmd(0, pitchCmd);
 
         if (fabsf(shortest_delta_deg(curPitch, tgtPitch)) <= PITCH_EPS_DEG) {
-            tgtYaw = normalize_deg(curYaw + sYawSign * 90.0f);
             #ifdef HOST_SIM
-            std::printf("[SIM] Planning yaw: curYaw=%.1f → tgtYaw=%.1f\n", curYaw, tgtYaw);
+            std::printf("[SIM] PITCH_DOWN complete. Ending flip sequence.\n");
             #endif
-            phase = PH_YAW_TURN2;
+            send_yaw_pitch_cmd(0, 0);
+            flipInProgress = false;
+            phase = PH_IDLE;
+            return;
         }
-        currentStepIndex++;
+
         break;
     }
+
 
 case PH_YAW_TURN2:
   {

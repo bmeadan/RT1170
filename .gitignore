@@ -1,0 +1,82 @@
+# Python and IDE files
+__pycache__/
+__repo__/
+.vscode/tasks.json
+.vscode/*
+.DS_Store
+.idea/
+
+# ARM GCC build and temporary files
+armgcc/*/
+armgcc/mcux_include.json
+armgcc/build*/
+armgcc/*_debug*/
+armgcc/*_release*/
+
+# Specific project-related directories to ignore
+utils/
+projects/
+demo/
+boards/
+
+# Object files and binaries
+*.o
+*.obj
+*.elf
+*.bin
+*.map
+
+# IDE / editor files
+*.swp
+*.swo
+*.log
+*.tmp
+*.launch
+
+# Source code files to ignore
+# This ignores all source files listed in your git status,
+# but keeps the folders you want to track
+src/FreeRTOSConfig.h
+src/audio/
+src/board.c
+src/board.h
+src/drivers/
+src/encoders/
+src/flash/
+src/flexpwm/
+src/flexspi/
+src/imu/
+src/interfaces/
+src/lights/
+src/logger/
+src/lpadc/
+src/lwipopts.h
+src/main.c
+src/motors/
+src/network/
+src/pin_mux.h
+src/platform/
+src/play.py
+src/protocol/
+src/serial/
+src/stservo/
+src/tests/
+src/usb/
+src/usb_host_config.h
+hosts/
+armgcc/
+evkbmimxrt1170_connect_cm4_cm7side.jlinkscript
+evkmimxrt1170_connect_cm4_cm7side.jlinkscript
+readme.md
+script.jlink
+.clang-format
+*.bak
+# If you have specific folders you need to keep, like src/host_sim/, you would
+# remove the lines above that ignore those folders and add a rule like:
+# !/src/host_sim/
+# !/src/controllers/
+
+
+# Allow these
+!/src/host_sim/
+!/src/controllers/
